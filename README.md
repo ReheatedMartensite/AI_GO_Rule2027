@@ -4,7 +4,7 @@
 
 **非官方个人维护包：Lizzieyzy 2.5.3 + KataGo 引擎 —— 修复形势判断，新增截图摆棋 / 联机对弈 / 实时盯盘同步，可选 transformer 引擎；2027 中国规则先行支持**
 
-> 本项目与 Lizzieyzy 官方无关；核心对局与分析功能均由 Lizzieyzy 提供（未修改其源码），本仓库维护的是修复与扩展。
+> 本项目与 Lizzieyzy 官方无关；核心对局与分析功能均由 Lizzieyzy 提供（未修改其源码），本仓库维护的是修复与扩展（继承自CoderChen的项目）。
 
 [![Release](https://img.shields.io/badge/release-v1.2-blue.svg)](../../releases)
 [![Fork of Coderchen-001/AI_GO](https://img.shields.io/badge/fork%20of-AI_GO%20v1.1-blue.svg)](https://github.com/Coderchen-001/AI_GO)
