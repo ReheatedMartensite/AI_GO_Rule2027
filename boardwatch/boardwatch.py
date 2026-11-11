@@ -389,6 +389,73 @@ def capture_window(hwnd):
     return frame
 
 
+_WGC_CLS = None          # None=未加载, False=不可用（缓存探测结果）
+_WGC_PROBED = False
+
+
+def _load_wgc():
+    """惰性加载 vendored windows_capture（WGC 抓图，ok-script 同路线）。
+
+    返回 WindowsCapture 类；不可用（缺依赖/非 Windows）返回 None。
+    """
+    global _WGC_CLS, _WGC_PROBED
+    if _WGC_PROBED:
+        return _WGC_CLS or None
+    _WGC_PROBED = True
+    try:
+        vdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor")
+        if os.path.isdir(vdir) and vdir not in sys.path:
+            sys.path.insert(0, vdir)
+        from windows_capture import WindowsCapture
+        _WGC_CLS = WindowsCapture
+    except Exception:
+        _WGC_CLS = False
+    return _WGC_CLS or None
+
+
+def capture_window_wgc(hwnd, timeout: float = 3.0):
+    """Windows Graphics Capture 单帧抓取，返回 BGR ndarray 或 None。
+
+    原理同 ok-ww/ok-nte：WGC 从 DWM 合成输出取帧，不走 GDI，
+    对 GPU 加速渲染的窗口比 PrintWindow 稳。浏览器视频区若被
+    MPO 硬件平面直送屏幕，则任何抓屏 API 都拿不到（黑帧属系统
+    行为，需在浏览器禁用硬件覆盖）。
+    一次会话取首帧即停，采样间隔秒级时开销可接受。
+    """
+    WC = _load_wgc()
+    if WC is None or not hwnd:
+        return None
+    got = {}
+
+    def on_frame_arrived(frame, control):
+        if "f" not in got:
+            got["f"] = frame.frame_buffer.copy()
+
+    def on_closed():
+        pass
+
+    try:
+        cap = WC(window_hwnd=int(hwnd), cursor_capture=False,
+                 draw_border=False)
+        cap.event(on_frame_arrived)
+        cap.event(on_closed)
+        ctl = cap.start_free_threaded()
+    except Exception:
+        return None
+    t0 = time.time()
+    while "f" not in got and time.time() - t0 < timeout:
+        time.sleep(0.05)
+    try:
+        ctl.stop()
+    except Exception:
+        pass
+    arr = got.get("f")
+    if arr is None or arr.size == 0 or arr.ndim != 3 or arr.shape[2] < 3:
+        return None
+    a = np.ascontiguousarray(arr[:, :, :3])  # BGRA -> BGR（实测通道序一致）
+    return a if a.any() else None
+
+
 # ---------------------------------------------------------------------------
 # B. 棋盘增量追踪
 # ---------------------------------------------------------------------------
@@ -1190,6 +1257,7 @@ class App:
         self.last_sgf_path = None
         self._thumb_photo = None
         self._restore_minimized = True      # 供工作线程读取的镜像
+        self._use_wgc = False               # WGC 抓图开关镜像（ok-script 同路线）
         self.lizzie = LizzieSync()
         self._lizzie_enabled = False
         self._lizzie_last_try = 0.0
@@ -1239,6 +1307,10 @@ class App:
         ttk.Checkbutton(row2, text="同步到 Lizzieyzy",
                         variable=self.lizzie_on,
                         command=self.on_toggle_lizzie).pack(side="left", padx=(10, 0))
+        self.wgc_on = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row2, text="WGC 抓图",
+                        variable=self.wgc_on,
+                        command=self._sync_wgc_flag).pack(side="left", padx=(10, 0))
 
         main = ttk.Frame(self.root, padding=(8, 0, 8, 8))
         main.pack(fill="both", expand=True)
@@ -1521,6 +1593,9 @@ class App:
     def _sync_restore_flag(self):
         self._restore_minimized = bool(self.restore_on.get())
 
+    def _sync_wgc_flag(self):
+        self._use_wgc = bool(self.wgc_on.get())
+
     def on_toggle_lizzie(self):
         self._lizzie_enabled = bool(self.lizzie_on.get())
         if self._lizzie_enabled:
@@ -1576,6 +1651,10 @@ class App:
                 time.sleep(0.6)  # 等待窗口重绘
 
         frame = capture_window(hwnd)
+        if self._use_wgc:
+            wgc = capture_window_wgc(hwnd)
+            if wgc is not None:
+                frame = wgc
         if frame is None or frame.size == 0:
             if self._w_cap_ok is not False:  # 只在状态转换时上报，避免刷屏
                 self.msg_q.put(("capture_fail",))

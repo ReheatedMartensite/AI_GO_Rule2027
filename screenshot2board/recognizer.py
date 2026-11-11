@@ -338,12 +338,11 @@ def detect_lattice(image: np.ndarray, n: Optional[int] = None) -> Optional[Latti
 # ---------------------------------------------------------------------------
 
 
-def _detect_board_bbox(image: np.ndarray) -> tuple[tuple[int, int, int, int], bool]:
-    """Return a bounding box around the largest square-ish object.
+def _board_bbox_candidates(image: np.ndarray, top: int = 5) -> list:
+    """候选棋盘框列表，按 面积×方正度 降序，末尾附带整图兜底。
 
-    Most screenshots contain the board as a large square (possibly inside a
-    phone/desktop app frame).  If no such square is found, the whole image is
-    used as the board area.
+    复杂截图（视频里的棋盘带横幅/黑边、网页嵌入棋盘等）上最优轮廓
+    不一定是棋盘，调用方可对候选逐个裁剪重试。
     """
     h, w = image.shape[:2]
     scale = min(1.0, 1200.0 / max(h, w))
@@ -356,7 +355,7 @@ def _detect_board_bbox(image: np.ndarray) -> tuple[tuple[int, int, int, int], bo
     edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
     cnts, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     img_area = im.shape[0] * im.shape[1]
-    best = None
+    cands = []
     for c in cnts:
         a = cv2.contourArea(c)
         if a < 0.08 * img_area:
@@ -365,13 +364,27 @@ def _detect_board_bbox(image: np.ndarray) -> tuple[tuple[int, int, int, int], bo
         ar = bw / max(1.0, bh)
         if not (0.6 < ar < 1.7):
             continue
-        score = a * (1.0 - min(0.5, abs(ar - 1.0)))
-        if best is None or score > best[0]:
-            best = (score, (x, y, bw, bh))
-    if best is None:
-        return (0, 0, w, h), False
-    x, y, bw, bh = best[1]
-    return (int(x / scale), int(y / scale), int(bw / scale), int(bh / scale)), True
+        score = a * (1.0 - min(1.0, abs(ar - 1.0)))
+        cands.append((score, (int(x / scale), int(y / scale),
+                              int(bw / scale), int(bh / scale))))
+    cands.sort(key=lambda t: -t[0])
+    out = [box for _, box in cands[:top]]
+    out.append((0, 0, w, h))
+    return out
+
+
+def _detect_board_bbox(image: np.ndarray) -> tuple[tuple[int, int, int, int], bool]:
+    """Return a bounding box around the largest square-ish object.
+
+    Most screenshots contain the board as a large square (possibly inside a
+    phone/desktop app frame).  If no such square is found, the whole image is
+    used as the board area.
+    """
+    h, w = image.shape[:2]
+    box = _board_bbox_candidates(image, top=1)[0]
+    if box == (0, 0, w, h):
+        return box, False
+    return box, True
 
 
 def _detect_stone_circles(
@@ -900,15 +913,34 @@ def recognize_from_corners(
 def recognize_auto(
     image: np.ndarray, n: Optional[int] = None
 ) -> tuple[Optional[Recognition], str]:
-    """Recognize a board, using stone-lattice detection then line fallback."""
+    """Recognize a board, using stone-lattice detection then line fallback.
+
+    整图失败时按 _board_bbox_candidates 候选框逐个裁剪重试，兼容
+    视频棋盘（横幅/手数标记/黑边）与网页嵌入等复杂布局。
+    """
+    sub = image
     fit = detect_lattice_from_stones(image, n)
     method = "stones"
     if fit is None:
         fit = detect_lattice(image, n)
         method = "lines"
     if fit is None:
+        for box in _board_bbox_candidates(image):
+            crop = image[box[1]:box[1] + box[3],
+                         box[0]:box[0] + box[2]]
+            if crop.size == 0 or min(crop.shape[0], crop.shape[1]) < 150:
+                continue
+            fit = detect_lattice_from_stones(crop, n)
+            method = "stones"
+            if fit is None:
+                fit = detect_lattice(crop, n)
+                method = "lines"
+            if fit is not None:
+                sub = crop
+                break
+    if fit is None:
         return None, "未找到完整棋盘网格（可能需要手动点击四个角）"
-    res = recognize_lattice(image, fit)
+    res = recognize_lattice(sub, fit)
     res.method = method
     if method == "stones":
         res.score = float(getattr(fit, "stone_score", fit.score))

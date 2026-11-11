@@ -549,6 +549,16 @@ else:
         print("  [FAIL] background capture tests raised exception")
         traceback.print_exc()
 
+# --- WGC 抓图（vendored windows_capture，ok-script 同路线） ---
+print("[WGC]")
+check("wgc vendor import available", BW._load_wgc() is not None)
+check("capture_window_wgc invalid hwnd -> None",
+      BW.capture_window_wgc(0) is None)
+_cls = BW._load_wgc()
+if _cls is not None:
+    ok_sig = callable(_cls) and hasattr(_cls, "start_free_threaded")
+    check("wgc class exposes start_free_threaded", ok_sig)
+
 # ---------------------------------------------------------------------------
 print("=== summary ===")
 print("PASS %d, FAIL %d, SKIP %d" % (PASS_COUNT, FAIL_COUNT, SKIP_COUNT))
